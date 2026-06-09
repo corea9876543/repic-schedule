@@ -161,14 +161,39 @@ async function saveCell(staff_id, work_date, sel){
 
 // ---------------- 연차 ----------------
 async function viewLeave(){
-  const { data:staff } = await sb.from("staff").select("id,name,status").order("name");
+  const { data:staff } = await sb.from("staff").select("id,name,team,status,annual_grant,carryover_used").order("name");
   const active = (staff||[]).filter(s=>s.status==='재직');
   const mine = PROFILE.staff_id;
-  const { data:reqs } = await sb.from("leave_request")
-    .select("*").order("created_at",{ascending:false}).limit(50);
+  const { data:allLv } = await sb.from("leave_request").select("*").order("created_at",{ascending:false});
+  const reqs = allLv||[];
   const sname = Object.fromEntries((staff||[]).map(s=>[s.id,s.name]));
-  const myReqs = (reqs||[]).filter(r=>!mine || r.staff_id===mine || canApprove());
+  // 사용 누계(승인완료 연차/반차) + 잔여 계산
+  const usedMap={};
+  reqs.forEach(l=>{ if(l.approval==='완료' && ['연차','오전반차','오후반차'].includes(l.type)) usedMap[l.staff_id]=(usedMap[l.staff_id]||0)+Number(l.days||0); });
+  const bal = s => { const g=Number(s.annual_grant); if(s.annual_grant==null||isNaN(g)) return null;
+    const used=(Number(s.carryover_used)||0)+(usedMap[s.id]||0); return {g, used:+used.toFixed(1), rem:+(g-used).toFixed(1)}; };
+  const myReqs = reqs.filter(r=>!mine || r.staff_id===mine || canApprove()).slice(0,50);
+  // 내 잔여 카드
+  let myBalHtml="";
+  if(mine){ const ms=(staff||[]).find(s=>s.id===mine); const b=ms&&bal(ms);
+    myBalHtml = b ? `<div class="box"><h3>🏖️ 내 잔여 연차</h3>
+      <div style="display:flex;gap:26px;align-items:baseline;flex-wrap:wrap">
+        <div><span style="font-size:34px;font-weight:800;color:var(--brand)">${b.rem}</span><span class="sub"> 일 남음</span></div>
+        <div class="sub">부여 ${b.g}일 · 사용 ${b.used}일</div></div></div>`
+      : `<div class="box"><h3>🏖️ 내 잔여 연차</h3><div class="sub">연차 부여 정보가 아직 없습니다 (관리자 설정 필요).</div></div>`;
+  }
+  // 전체 잔여 표 (팀장 이상)
+  let allBalHtml="";
+  if(canApprove()){
+    const rows=active.map(s=>({s,b:bal(s)})).filter(x=>x.b).sort((a,b)=>a.b.rem-b.b.rem);
+    allBalHtml=`<div class="box"><h3>📊 전체 잔여 연차 (${rows.length}명 · 적은순)</h3>
+      <div class="gridwrap"><table><thead><tr><th class="namecell">직원</th><th>팀</th><th>부여</th><th>사용</th><th>잔여</th></tr></thead><tbody>
+      ${rows.map(x=>`<tr><td class="namecell">${x.s.name}</td><td>${x.s.team}</td><td>${x.b.g}</td><td>${x.b.used}</td>
+        <td style="font-weight:700;color:${x.b.rem<=2?'#dc2626':x.b.rem<=4?'#d97706':'#16a34a'}">${x.b.rem}</td></tr>`).join("")}
+      </tbody></table></div></div>`;
+  }
   $("#view").innerHTML = `
+    ${myBalHtml}
     <div class="box"><h3>연차·휴가 신청</h3>
       <div class="row" style="border:0;flex-wrap:wrap">
         ${mine?`<span class="pill">신청자: ${sname[mine]||"-"}</span>`:`<select class="fld" id="lstaff">${active.map(s=>`<option value="${s.id}">${s.name}</option>`).join("")}</select>`}
@@ -178,6 +203,7 @@ async function viewLeave(){
         <input class="fld" id="lreason" placeholder="사유(선택)" style="flex:1;min-width:120px">
         <button class="btn pri" onclick="submitLeave()">신청</button>
       </div><div class="msg ok" id="lmsg"></div></div>
+    ${allBalHtml}
     <div class="box"><h3>신청 내역</h3>
       ${myReqs.length? myReqs.map(r=>`<div class="row">
         <span>${sname[r.staff_id]||"?"} · ${r.type} · ${r.start_date}${r.end_date!==r.start_date?"~"+r.end_date:""} (${r.days}일)</span>
