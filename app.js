@@ -7,7 +7,7 @@ const DOW = ["일","월","화","수","목","금","토"];
 const $ = s => document.querySelector(s);
 const app = $("#app");
 
-let ME=null, PROFILE=null, STAFF=[], TAB="grid", WEEK=sundayOf(new Date(2026,5,9));
+let ME=null, PROFILE=null, STAFF=[], TAB="grid", WEEK=sundayOf(new Date(2026,5,9)), AUTHMODE="login";
 
 function sundayOf(d){ const x=new Date(d); x.setDate(x.getDate()-x.getDay()); x.setHours(0,0,0,0); return x; }
 function fmt(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
@@ -43,21 +43,38 @@ async function route(){
 
 // ---------------- 인증 ----------------
 function renderAuth(){
+  if(AUTHMODE==="signup") return renderSignup();
   app.innerHTML = `<div class="center"><div class="auth">
     <h2>🗓️ 레픽 스케줄</h2><p>직원 계정으로 로그인하세요.</p>
     <input id="em" type="email" placeholder="이메일">
     <input id="pw" type="password" placeholder="비밀번호">
     <button class="btn pri" onclick="login()">로그인</button>
-    <button class="btn" onclick="signup()">회원가입 (관리자 승인 후 사용)</button>
+    <button class="btn" onclick="toSignup()">회원가입</button>
     <div class="msg" id="amsg"></div></div></div>`;
 }
+function renderSignup(){
+  app.innerHTML = `<div class="center"><div class="auth">
+    <h2>🗓️ 회원가입</h2><p>가입 후 <b>관리자 승인</b>을 받아야 이용할 수 있습니다.</p>
+    <input id="snm" type="text" placeholder="이름 (실명)">
+    <input id="em" type="email" placeholder="이메일">
+    <input id="pw" type="password" placeholder="비밀번호 (8자 이상)">
+    <button class="btn pri" onclick="signup()">가입하기</button>
+    <button class="btn" onclick="toLogin()">← 로그인으로</button>
+    <div class="msg" id="amsg"></div></div></div>`;
+}
+function toSignup(){ AUTHMODE="signup"; renderAuth(); }
+function toLogin(){ AUTHMODE="login"; renderAuth(); }
 async function login(){
   const { error } = await sb.auth.signInWithPassword({ email:$("#em").value.trim(), password:$("#pw").value });
   if(error) $("#amsg").textContent = error.message;
 }
 async function signup(){
-  const { error } = await sb.auth.signUp({ email:$("#em").value.trim(), password:$("#pw").value });
-  $("#amsg").className="msg ok";
+  const name = $("#snm")?.value.trim();
+  if(!name){ $("#amsg").className="msg"; $("#amsg").textContent="이름을 입력하세요."; return; }
+  const { error } = await sb.auth.signUp({
+    email:$("#em").value.trim(), password:$("#pw").value,
+    options:{ data:{ name } } });
+  $("#amsg").className = error ? "msg" : "msg ok";
   $("#amsg").textContent = error ? error.message : "가입 완료. 관리자 승인 후 로그인하세요.";
 }
 async function logout(){ await sb.auth.signOut(); location.reload(); }
@@ -202,12 +219,12 @@ async function approve(id, ok){
 async function viewAdmin(){
   const [{data:profs},{data:staff}] = await Promise.all([
     sb.from("profiles").select("*").order("created_at"),
-    sb.from("staff").select("id,name,team").order("team").order("name")
+    sb.from("staff").select("id,name,team").eq("status","재직").order("team").order("name")
   ]);
   const opt = (staff||[]).map(s=>`<option value="${s.id}">${s.name} (${s.team})</option>`).join("");
   $("#view").innerHTML = `<div class="box"><h3>계정 승인 · 권한 (${(profs||[]).length})</h3>
     ${(profs||[]).map(p=>`<div class="row">
-      <span>${p.email} ${p.approved?'<span class="pill ok">승인됨</span>':'<span class="pill">대기</span>'}</span>
+      <span>${p.name?`<b>${p.name}</b> · `:''}${p.email} ${p.approved?'<span class="pill ok">승인됨</span>':'<span class="pill">대기</span>'}</span>
       <span>
         <select class="fld" id="r_${p.id}">${["직원","팀장","대표","관리자"].map(r=>`<option ${r===p.role?"selected":""}>${r}</option>`).join("")}</select>
         <select class="fld" id="s_${p.id}"><option value="">직원연결…</option>${opt.replace(`value="${p.staff_id}"`,`value="${p.staff_id}" selected`)}</select>
@@ -223,5 +240,6 @@ async function saveProfile(id, approve){
   if(error) alert(error.message); else viewAdmin();
 }
 window.go=go;window.login=login;window.signup=signup;window.logout=logout;
+window.toSignup=toSignup;window.toLogin=toLogin;
 window.saveCell=saveCell;window.moveWeek=moveWeek;window.submitLeave=submitLeave;
 window.approve=approve;window.saveProfile=saveProfile;
