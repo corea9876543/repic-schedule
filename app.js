@@ -161,37 +161,37 @@ async function saveCell(staff_id, work_date, sel){
 
 // ---------------- 연차 ----------------
 async function viewLeave(){
-  const { data:staff } = await sb.from("staff").select("id,name,team,status,annual_grant,carryover_used").order("name");
-  const active = (staff||[]).filter(s=>s.status==='재직');
   const mine = PROFILE.staff_id;
-  const { data:allLv } = await sb.from("leave_request").select("*").order("created_at",{ascending:false});
-  const reqs = allLv||[];
+  const [{ data:staff }, { data:allLv }, { data:balances }] = await Promise.all([
+    sb.from("staff").select("id,name,team,status").order("name"),
+    sb.from("leave_request").select("*").order("created_at",{ascending:false}),
+    sb.rpc("leave_balances")   // 역할 기반: 직원=본인만 / 팀장+=전체
+  ]);
+  const active = (staff||[]).filter(s=>s.status==='재직');
+  const reqs = allLv||[];      // leave_read RLS가 본인(직원)/전체(팀장+)로 이미 제한
+  const bals = balances||[];
   const sname = Object.fromEntries((staff||[]).map(s=>[s.id,s.name]));
-  // 사용 누계(승인완료 연차/반차) + 잔여 계산
-  const usedMap={};
-  reqs.forEach(l=>{ if(l.approval==='완료' && ['연차','오전반차','오후반차'].includes(l.type)) usedMap[l.staff_id]=(usedMap[l.staff_id]||0)+Number(l.days||0); });
-  const bal = s => { const g=Number(s.annual_grant); if(s.annual_grant==null||isNaN(g)) return null;
-    const used=(Number(s.carryover_used)||0)+(usedMap[s.id]||0); return {g, used:+used.toFixed(1), rem:+(g-used).toFixed(1)}; };
-  const myReqs = reqs.filter(r=>!mine || r.staff_id===mine || canApprove()).slice(0,50);
+  const myReqs = reqs.slice(0,80);
   // 내 잔여 카드
   let myBalHtml="";
-  if(mine){ const ms=(staff||[]).find(s=>s.id===mine); const b=ms&&bal(ms);
-    myBalHtml = b ? `<div class="box"><h3>🏖️ 내 잔여 연차</h3>
+  if(mine){ const b=bals.find(x=>x.id===mine);
+    myBalHtml = (b && b.remaining!=null) ? `<div class="box"><h3>🏖️ 내 잔여 연차</h3>
       <div style="display:flex;gap:26px;align-items:baseline;flex-wrap:wrap">
-        <div><span style="font-size:34px;font-weight:800;color:var(--brand)">${b.rem}</span><span class="sub"> 일 남음</span></div>
-        <div class="sub">부여 ${b.g}일 · 사용 ${b.used}일</div></div></div>`
+        <div><span style="font-size:34px;font-weight:800;color:var(--brand)">${b.remaining}</span><span class="sub"> 일 남음</span></div>
+        <div class="sub">부여 ${b.grant_days}일 · 사용 ${b.used}일</div></div></div>`
       : `<div class="box"><h3>🏖️ 내 잔여 연차</h3><div class="sub">연차 부여 정보가 아직 없습니다 (관리자 설정 필요).</div></div>`;
   }
-  // 전체 잔여 표 (팀장 이상)
+  // 전체 잔여 표 (팀장 이상만 — RPC가 권한에 따라 전체 반환)
   let allBalHtml="";
   if(canApprove()){
-    const rows=active.map(s=>({s,b:bal(s)})).filter(x=>x.b).sort((a,b)=>a.b.rem-b.b.rem);
+    const rows=bals.filter(b=>b.remaining!=null).sort((a,b)=>a.remaining-b.remaining);
     allBalHtml=`<div class="box"><h3>📊 전체 잔여 연차 (${rows.length}명 · 적은순)</h3>
       <div class="gridwrap"><table><thead><tr><th class="namecell">직원</th><th>팀</th><th>부여</th><th>사용</th><th>잔여</th></tr></thead><tbody>
-      ${rows.map(x=>`<tr><td class="namecell">${x.s.name}</td><td>${x.s.team}</td><td>${x.b.g}</td><td>${x.b.used}</td>
-        <td style="font-weight:700;color:${x.b.rem<=2?'#dc2626':x.b.rem<=4?'#d97706':'#16a34a'}">${x.b.rem}</td></tr>`).join("")}
+      ${rows.map(b=>`<tr><td class="namecell">${b.name}</td><td>${b.team}</td><td>${b.grant_days}</td><td>${b.used}</td>
+        <td style="font-weight:700;color:${b.remaining<=2?'#dc2626':b.remaining<=4?'#d97706':'#16a34a'}">${b.remaining}</td></tr>`).join("")}
       </tbody></table></div></div>`;
   }
+  const cancellable = a => ['신청','팀장승인','대표승인','완료'].includes(a);
   $("#view").innerHTML = `
     ${myBalHtml}
     <div class="box"><h3>연차·휴가 신청</h3>
@@ -207,7 +207,7 @@ async function viewLeave(){
     <div class="box"><h3>신청 내역</h3>
       ${myReqs.length? myReqs.map(r=>`<div class="row">
         <span>${sname[r.staff_id]||"?"} · ${r.type} · ${r.start_date}${r.end_date!==r.start_date?"~"+r.end_date:""} (${r.days}일)</span>
-        <span class="pill">${r.approval}</span></div>`).join("") : '<div class="sub">내역 없음</div>'}</div>`;
+        <span><span class="pill">${r.approval}</span>${cancellable(r.approval)?` <button class="btn" onclick="cancelLeave(${r.id})">취소</button>`:''}</span></div>`).join("") : '<div class="sub">내역 없음</div>'}</div>`;
 }
 async function submitLeave(){
   const staff_id = PROFILE.staff_id || +$("#lstaff").value;
@@ -217,6 +217,14 @@ async function submitLeave(){
   const { error } = await sb.from("leave_request").insert(
     { staff_id, type:$("#ltype").value, start_date:start, end_date:end, days:+$("#ldays").value, reason:$("#lreason").value, approval:"신청" });
   if(error) alert(error.message); else { $("#lmsg").textContent="신청 완료"; viewLeave(); }
+}
+
+async function cancelLeave(id){
+  if(!confirm("이 연차/휴가 신청을 취소하시겠습니까?\n(승인된 건이면 해당 기간 스케줄도 '근무'로 복원됩니다)")) return;
+  const { error } = await sb.rpc("cancel_leave", { p_id:id });
+  if(error){ toast("취소 실패: "+error.message, false); return; }
+  toast("취소되었습니다 ✓");
+  viewLeave();
 }
 
 // ---------------- 승인 ----------------
@@ -278,4 +286,4 @@ async function saveProfile(id, approve){
 window.go=go;window.login=login;window.signup=signup;window.logout=logout;
 window.toSignup=toSignup;window.toLogin=toLogin;
 window.saveCell=saveCell;window.moveWeek=moveWeek;window.submitLeave=submitLeave;
-window.approve=approve;window.saveProfile=saveProfile;
+window.approve=approve;window.saveProfile=saveProfile;window.cancelLeave=cancelLeave;
