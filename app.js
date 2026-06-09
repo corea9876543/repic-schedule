@@ -137,7 +137,8 @@ async function saveCell(staff_id, work_date, sel){
 
 // ---------------- 연차 ----------------
 async function viewLeave(){
-  const { data:staff } = await sb.from("staff").select("id,name").order("name");
+  const { data:staff } = await sb.from("staff").select("id,name,status").order("name");
+  const active = (staff||[]).filter(s=>s.status==='재직');
   const mine = PROFILE.staff_id;
   const { data:reqs } = await sb.from("leave_request")
     .select("*").order("created_at",{ascending:false}).limit(50);
@@ -146,7 +147,7 @@ async function viewLeave(){
   $("#view").innerHTML = `
     <div class="box"><h3>연차·휴가 신청</h3>
       <div class="row" style="border:0;flex-wrap:wrap">
-        ${mine?`<span class="pill">신청자: ${sname[mine]||"-"}</span>`:`<select class="fld" id="lstaff">${(staff||[]).map(s=>`<option value="${s.id}">${s.name}</option>`).join("")}</select>`}
+        ${mine?`<span class="pill">신청자: ${sname[mine]||"-"}</span>`:`<select class="fld" id="lstaff">${active.map(s=>`<option value="${s.id}">${s.name}</option>`).join("")}</select>`}
         <select class="fld" id="ltype">${["연차","오전반차","오후반차","병가","경조","공가"].map(t=>`<option>${t}</option>`).join("")}</select>
         <input class="fld" type="date" id="lstart"><span>~</span><input class="fld" type="date" id="lend">
         <input class="fld" type="number" id="ldays" value="1" step="0.5" style="width:80px" title="일수">
